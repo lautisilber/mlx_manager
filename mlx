@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+set -euo pipefail
+shopt -s nullglob
+
+SCRIPT_NAME="mlx"
+VENV_NAME="mlx-manager"
+FALLBACK_VENV_DIR="$HOME/.mlx-manager/venv"
+COMMANDS=(create-venv delete-venv get list chat serve delete completion)
+
+if [ -n "${HF_HUB_CACHE:-}" ]; then
+  HF_CACHE_DIR="$HF_HUB_CACHE"
+elif [ -n "${HF_HOME:-}" ]; then
+  HF_CACHE_DIR="$HF_HOME/hub"
+else
+  HF_CACHE_DIR="$HOME/.cache/huggingface/hub"
+fi
+
+usage() {
+  cat <<EOF
+Usage: $SCRIPT_NAME <command> [arguments]
+
+Commands:
+  create-venv [python-version]   Create the python venv used to run mlx-lm
+  delete-venv [-y]               Delete the python venv used to run mlx-lm
+  get <huggingface-name>         Download a model from huggingface
+  list                           List all installed models
+  chat <huggingface-name>        Chat with an installed model
+  serve <huggingface-name> [port]  Serve a model (default port 8080)
+  delete <huggingface-name> [-y] Delete an installed model
+  completion                     Print shell completion code (see below)
+
+Tab completion is optional. To enable it, add this to your shell's rc file:
+  source <(mlx completion)
+It auto-detects bash vs zsh and does nothing unless you add that line.
+EOF
+}
+
+has_pyenv() {
+  command -v pyenv >/dev/null 2>&1
+}
+
+has_pyenv_virtualenv() {
+  has_pyenv && pyenv commands 2>/dev/null | grep -qx virtualenv
+}
+
+venv_state() {
+  if has_pyenv_virtualenv && pyenv versions --bare 2>/dev/null | grep -qx "$VENV_NAME"; then
+    echo "pyenv"
+  elif [ -d "$FALLBACK_VENV_DIR" ]; then
+    echo "venv"
+  else
+    echo "none"
+  fi
+}
+
+ensure_venv() {
+  if [ "$(venv_state)" = "none" ]; then
+    echo "mlx venv not found. Run '$SCRIPT_NAME create-venv' first." >&2
+    exit 1
+  fi
+}
+
+run_in_venv() {
+  local exe="$1"; shift
+  case "$(venv_state)" in
+    pyenv)
+      PYENV_VERSION="$VENV_NAME" "$(pyenv root)/shims/$exe" "$@"
+      ;;
+    venv)
+      "$FALLBACK_VENV_DIR/bin/$exe" "$@"
+      ;;
+    *)
+      echo "mlx venv not found. Run '$SCRIPT_NAME create-venv' first." >&2
+      exit 1
+      ;;
+  esac
+}
+
+confirm() {
+  local prompt="$1"
+  read -r -p "$prompt [y/N] " reply
+  case "$reply" in
+    [yY]|[yY][eE][sS]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+model_to_dir_name() {
+  echo "models--$(printf '%s' "$1" | sed 's#/#--#g')"
+}
+
+model_installed() {
+  [ -d "$HF_CACHE_DIR/$(model_to_dir_name "$1")" ]
+}
+
+hf_download_exe() {
+  local bin_dir
+  case "$(venv_state)" in
+    pyenv) bin_dir="$(pyenv root)/versions/$VENV_NAME/bin" ;;
+    venv) bin_dir="$FALLBACK_VENV_DIR/bin" ;;
+    *) echo "huggingface-cli"; return ;;
+  esac
+  if [ -x "$bin_dir/hf" ]; then
+    echo "hf"
+  else
+    echo "huggingface-cli"
+  fi
+}
+
+cmd_create_venv() {
+  local py_version="${1:-}"
+
+  case "$(venv_state)" in
+    pyenv)
+      echo "pyenv virtualenv '$VENV_NAME' already exists."
+      return 0
+      ;;
+    venv)
+      echo "venv already exists at $FALLBACK_VENV_DIR."
+      return 0
+      ;;
+  esac
+
+  if has_pyenv_virtualenv; then
+    if [ -z "$py_version" ]; then
+      py_version="$(pyenv version-name)"
+    fi
+    echo "Creating pyenv virtualenv '$VENV_NAME' (python $py_version)..."
+    pyenv virtualenv "$py_version" "$VENV_NAME"
+    pyenv rehash
+    PYENV_VERSION="$VENV_NAME" "$(pyenv root)/shims/pip" install --upgrade pip
+    PYENV_VERSION="$VENV_NAME" "$(pyenv root)/shims/pip" install mlx-lm
+  else
+    echo "pyenv (with pyenv-virtualenv) not found; creating venv at $FALLBACK_VENV_DIR..."
+    mkdir -p "$(dirname "$FALLBACK_VENV_DIR")"
+    python3 -m venv "$FALLBACK_VENV_DIR"
+    "$FALLBACK_VENV_DIR/bin/pip" install --upgrade pip
+    "$FALLBACK_VENV_DIR/bin/pip" install mlx-lm
+  fi
+  echo "Done. mlx-lm installed."
+}
+
+cmd_delete_venv() {
+  local yes=0
+  for arg in "$@"; do
+    case "$arg" in -y|--yes) yes=1 ;; esac
+  done
+
+  case "$(venv_state)" in
+    pyenv)
+      if [ "$yes" -ne 1 ] && ! confirm "Delete pyenv virtualenv '$VENV_NAME'?"; then
+        echo "Aborted."
+        return 0
+      fi
+      pyenv virtualenv-delete -f "$VENV_NAME"
+      echo "Deleted pyenv virtualenv '$VENV_NAME'."
+      ;;
+    venv)
+      if [ "$yes" -ne 1 ] && ! confirm "Delete venv at $FALLBACK_VENV_DIR?"; then
+        echo "Aborted."
+        return 0
+      fi
+      rm -rf "$FALLBACK_VENV_DIR"
+      echo "Deleted venv at $FALLBACK_VENV_DIR."
+      ;;
+    *)
+      echo "No mlx venv found."
+      ;;
+  esac
+}
+
+cmd_get() {
+  local model="${1:-}"
+  if [ -z "$model" ]; then
+    echo "Usage: $SCRIPT_NAME get <huggingface-name>" >&2
+    exit 1
+  fi
+  ensure_venv
+  echo "Downloading $model..."
+  run_in_venv "$(hf_download_exe)" download "$model"
+}
+
+list_model_names() {
+  local dir name
+  for dir in "$HF_CACHE_DIR"/models--*; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$dir")"
+    name="${name#models--}"
+    echo "${name//--//}"
+  done
+}
+
+cmd_list() {
+  local names
+  names="$(list_model_names)"
+  if [ -z "$names" ]; then
+    echo "No models installed."
+  else
+    printf '%s\n' "$names"
+  fi
+}
+
+cmd_chat() {
+  local model="${1:-}"
+  if [ -z "$model" ]; then
+    echo "Usage: $SCRIPT_NAME chat <huggingface-name>" >&2
+    exit 1
+  fi
+  ensure_venv
+  if ! model_installed "$model"; then
+    echo "Model '$model' is not installed. Run '$SCRIPT_NAME get $model' first." >&2
+    exit 1
+  fi
+  run_in_venv mlx_lm.chat --model "$model"
+}
+
+cmd_serve() {
+  local model="${1:-}"
+  local port="${2:-8080}"
+  if [ -z "$model" ]; then
+    echo "Usage: $SCRIPT_NAME serve <huggingface-name> [port]" >&2
+    exit 1
+  fi
+  ensure_venv
+  if ! model_installed "$model"; then
+    echo "Model '$model' is not installed. Run '$SCRIPT_NAME get $model' first." >&2
+    exit 1
+  fi
+  run_in_venv mlx_lm.server --model "$model" --port "$port"
+}
+
+cmd_delete() {
+  local model="" yes=0
+  for arg in "$@"; do
+    case "$arg" in
+      -y|--yes) yes=1 ;;
+      *) model="$arg" ;;
+    esac
+  done
+  if [ -z "$model" ]; then
+    echo "Usage: $SCRIPT_NAME delete <huggingface-name> [-y]" >&2
+    exit 1
+  fi
+  if ! model_installed "$model"; then
+    echo "Model '$model' is not installed." >&2
+    exit 1
+  fi
+  if [ "$yes" -ne 1 ] && ! confirm "Delete model '$model'? This cannot be undone."; then
+    echo "Aborted."
+    return 0
+  fi
+  rm -rf "$HF_CACHE_DIR/$(model_to_dir_name "$model")"
+  echo "Deleted $model."
+}
+
+cmd_complete() {
+  local line point cur cword
+  line="${COMP_LINE:-}"
+  point="${COMP_POINT:-${#line}}"
+  line="${line:0:point}"
+
+  # intentionally unquoted: splits on whitespace like COMP_WORDS would
+  local -a words=( $line )
+  if [[ "$line" == *[[:space:]] ]]; then
+    words+=("")
+  fi
+  cword=$(( ${#words[@]} - 1 ))
+  [ "$cword" -lt 0 ] && cword=0
+  cur="${words[cword]:-}"
+
+  if [ "$cword" -le 1 ]; then
+    compgen -W "${COMMANDS[*]}" -- "$cur"
+    return
+  fi
+
+  case "${words[1]:-}" in
+    chat|serve|delete)
+      if [ "$cword" -eq 2 ]; then
+        compgen -W "$(list_model_names)" -- "$cur"
+      fi
+      ;;
+  esac
+}
+
+cmd_completion() {
+  cat <<'EOF'
+if [ -n "${ZSH_VERSION:-}" ]; then
+  type compdef >/dev/null 2>&1 || { autoload -Uz compinit; compinit -u; }
+  type complete >/dev/null 2>&1 || { autoload -Uz bashcompinit; bashcompinit; }
+  complete -C 'mlx __complete' mlx
+elif [ -n "${BASH_VERSION:-}" ]; then
+  complete -C 'mlx __complete' mlx
+else
+  echo "mlx completion: unsupported shell (only bash and zsh are supported)" >&2
+fi
+EOF
+}
+
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    create-venv) shift; cmd_create_venv "$@" ;;
+    delete-venv) shift; cmd_delete_venv "$@" ;;
+    get) shift; cmd_get "$@" ;;
+    list) shift; cmd_list "$@" ;;
+    chat) shift; cmd_chat "$@" ;;
+    serve) shift; cmd_serve "$@" ;;
+    delete) shift; cmd_delete "$@" ;;
+    completion) shift; cmd_completion "$@" ;;
+    __complete) cmd_complete ;;
+    -h|--help|help|"") usage ;;
+    *)
+      echo "Unknown command: $cmd" >&2
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

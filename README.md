@@ -16,7 +16,18 @@ A bash script tool that allows the user to manage local AI models from the termi
 make install
 ```
 
-Copies `mlx` to `~/.local/bin/mlx` (make sure `~/.local/bin` is on your `PATH`). Run `make uninstall` to remove it. Set `PREFIX` to install elsewhere, e.g. `make install PREFIX=/usr/local`.
+Copies `mlx` to `~/.local/bin`, and the `mlx_manager/` support folder (containing the `pack_*.py` helpers) to `~/.local/bin/mlx_manager/` (make sure `~/.local/bin` is on your `PATH`). Run `make uninstall` to remove them. Set `PREFIX` to install elsewhere, e.g. `make install PREFIX=/usr/local`.
+
+### Venvs
+
+There are two venvs, and you only ever directly manage one of them:
+
+- **`~/.mlx-manager/venv`** — the normal venv, used for everything by default (`mlx get`, `mlx chat`, `mlx serve` on any regular model). `mlx create-venv` always creates this one (via `python3 -m venv`, so it still picks up whatever Python `pyenv` or similar has active on your `PATH`) and installs `mlx-lm` into it. This is the venv that must exist before you can use the tool at all.
+- **`~/.mlx-manager/venv-runtime`** — a second venv, only for models whose pack declares `requires_runtime` in `config.json` (packs that ship their own loader because their architecture or quantization scheme isn't supported by stock mlx-lm — see below). You never create this yourself: `mlx chat` detects such a pack automatically and creates this venv the first time one is needed, installing that pack's `runtime/requirements.txt` into it. Keeping it separate means a pack's pinned dependency versions (which can differ a lot from what `mlx-lm` normally uses) never affect the normal venv.
+
+`mlx delete-venv` removes both venvs if present, in one confirmation — you don't need to track them separately when cleaning up.
+
+Some HuggingFace packs (e.g. novel quantization schemes) ship their own loader in a `runtime/` folder instead of relying on mlx-lm's architecture registry. When `mlx chat` detects one (via the `venv-runtime` venv above), it chats via `mlx_manager/pack_chat.py`'s REPL instead of `mlx_lm.chat`. `mlx serve` does not yet support these packs.
 
 ### Tab completion (optional)
 

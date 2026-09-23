@@ -2,9 +2,10 @@
 set -euo pipefail
 shopt -s nullglob
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SCRIPT_NAME="mlx"
-VENV_NAME="mlx-manager"
-FALLBACK_VENV_DIR="$HOME/.mlx-manager/venv"
+VENV_DIR="$HOME/.mlx-manager/venv"
+RUNTIME_VENV_DIR="$HOME/.mlx-manager/venv-runtime"
 COMMANDS=(create-venv delete-venv get list chat serve delete completion)
 
 if [ -n "${HF_HUB_CACHE:-}" ]; then
@@ -20,8 +21,8 @@ usage() {
 Usage: $SCRIPT_NAME <command> [arguments]
 
 Commands:
-  create-venv [python-version]   Create the python venv used to run mlx-lm
-  delete-venv [-y]               Delete the python venv used to run mlx-lm
+  create-venv                    Create the python venv used to run mlx-lm
+  delete-venv [-y]               Delete the mlx-lm venv(s) (see below)
   get <huggingface-name>         Download a model from huggingface
   list                           List all installed models
   chat <huggingface-name>        Chat with an installed model
@@ -35,45 +36,31 @@ It auto-detects bash vs zsh and does nothing unless you add that line.
 EOF
 }
 
-has_pyenv() {
-  command -v pyenv >/dev/null 2>&1
-}
-
-has_pyenv_virtualenv() {
-  has_pyenv && pyenv commands 2>/dev/null | grep -qx virtualenv
-}
-
-venv_state() {
-  if has_pyenv_virtualenv && pyenv versions --bare 2>/dev/null | grep -qx "$VENV_NAME"; then
-    echo "pyenv"
-  elif [ -d "$FALLBACK_VENV_DIR" ]; then
-    echo "venv"
-  else
-    echo "none"
-  fi
-}
-
 ensure_venv() {
-  if [ "$(venv_state)" = "none" ]; then
+  if [ ! -d "$VENV_DIR" ]; then
     echo "mlx venv not found. Run '$SCRIPT_NAME create-venv' first." >&2
     exit 1
   fi
 }
 
 run_in_venv() {
-  local exe="$1"; shift
-  case "$(venv_state)" in
-    pyenv)
-      PYENV_VERSION="$VENV_NAME" "$(pyenv root)/shims/$exe" "$@"
-      ;;
-    venv)
-      "$FALLBACK_VENV_DIR/bin/$exe" "$@"
-      ;;
-    *)
-      echo "mlx venv not found. Run '$SCRIPT_NAME create-venv' first." >&2
-      exit 1
-      ;;
-  esac
+  local venv_dir="$1" exe="$2"; shift 2
+  if [ ! -d "$venv_dir" ]; then
+    echo "venv not found at $venv_dir." >&2
+    exit 1
+  fi
+  "$venv_dir/bin/$exe" "$@"
+}
+
+# custom-runtime packs (see pack_requires_runtime) get their own venv, lazily
+# created on first use, so installing their pinned deps never disturbs the
+# main venv that every other model uses
+ensure_runtime_venv() {
+  if [ ! -d "$RUNTIME_VENV_DIR" ]; then
+    echo "Creating a separate venv for custom-runtime packs at $RUNTIME_VENV_DIR..."
+    python3 -m venv "$RUNTIME_VENV_DIR"
+    "$RUNTIME_VENV_DIR/bin/pip" install --upgrade pip
+  fi
 }
 
 confirm() {
@@ -93,14 +80,27 @@ model_installed() {
   [ -d "$HF_CACHE_DIR/$(model_to_dir_name "$1")" ]
 }
 
+model_snapshot_dir() {
+  local snap
+  for snap in "$HF_CACHE_DIR/$(model_to_dir_name "$1")/snapshots"/*; do
+    [ -d "$snap" ] && { echo "$snap"; return 0; }
+  done
+  return 1
+}
+
+# some packs (e.g. custom quantization schemes) declare an architecture mlx-lm
+# doesn't know and ship their own loader in runtime/; config.json says so via requires_runtime
+pack_requires_runtime() {
+  [ -f "$1/config.json" ] || return 1
+  python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    sys.exit(0 if json.load(f).get('requires_runtime') else 1)
+" "$1/config.json"
+}
+
 hf_download_exe() {
-  local bin_dir
-  case "$(venv_state)" in
-    pyenv) bin_dir="$(pyenv root)/versions/$VENV_NAME/bin" ;;
-    venv) bin_dir="$FALLBACK_VENV_DIR/bin" ;;
-    *) echo "huggingface-cli"; return ;;
-  esac
-  if [ -x "$bin_dir/hf" ]; then
+  if [ -x "$VENV_DIR/bin/hf" ]; then
     echo "hf"
   else
     echo "huggingface-cli"
@@ -108,35 +108,15 @@ hf_download_exe() {
 }
 
 cmd_create_venv() {
-  local py_version="${1:-}"
-
-  case "$(venv_state)" in
-    pyenv)
-      echo "pyenv virtualenv '$VENV_NAME' already exists."
-      return 0
-      ;;
-    venv)
-      echo "venv already exists at $FALLBACK_VENV_DIR."
-      return 0
-      ;;
-  esac
-
-  if has_pyenv_virtualenv; then
-    if [ -z "$py_version" ]; then
-      py_version="$(pyenv version-name)"
-    fi
-    echo "Creating pyenv virtualenv '$VENV_NAME' (python $py_version)..."
-    pyenv virtualenv "$py_version" "$VENV_NAME"
-    pyenv rehash
-    PYENV_VERSION="$VENV_NAME" "$(pyenv root)/shims/pip" install --upgrade pip
-    PYENV_VERSION="$VENV_NAME" "$(pyenv root)/shims/pip" install mlx-lm
-  else
-    echo "pyenv (with pyenv-virtualenv) not found; creating venv at $FALLBACK_VENV_DIR..."
-    mkdir -p "$(dirname "$FALLBACK_VENV_DIR")"
-    python3 -m venv "$FALLBACK_VENV_DIR"
-    "$FALLBACK_VENV_DIR/bin/pip" install --upgrade pip
-    "$FALLBACK_VENV_DIR/bin/pip" install mlx-lm
+  if [ -d "$VENV_DIR" ]; then
+    echo "venv already exists at $VENV_DIR."
+    return 0
   fi
+  echo "Creating venv at $VENV_DIR..."
+  mkdir -p "$(dirname "$VENV_DIR")"
+  python3 -m venv "$VENV_DIR"
+  "$VENV_DIR/bin/pip" install --upgrade pip
+  "$VENV_DIR/bin/pip" install mlx-lm
   echo "Done. mlx-lm installed."
 }
 
@@ -146,27 +126,27 @@ cmd_delete_venv() {
     case "$arg" in -y|--yes) yes=1 ;; esac
   done
 
-  case "$(venv_state)" in
-    pyenv)
-      if [ "$yes" -ne 1 ] && ! confirm "Delete pyenv virtualenv '$VENV_NAME'?"; then
-        echo "Aborted."
-        return 0
-      fi
-      pyenv virtualenv-delete -f "$VENV_NAME"
-      echo "Deleted pyenv virtualenv '$VENV_NAME'."
-      ;;
-    venv)
-      if [ "$yes" -ne 1 ] && ! confirm "Delete venv at $FALLBACK_VENV_DIR?"; then
-        echo "Aborted."
-        return 0
-      fi
-      rm -rf "$FALLBACK_VENV_DIR"
-      echo "Deleted venv at $FALLBACK_VENV_DIR."
-      ;;
-    *)
-      echo "No mlx venv found."
-      ;;
-  esac
+  local -a existing=()
+  [ -d "$VENV_DIR" ] && existing+=("$VENV_DIR")
+  [ -d "$RUNTIME_VENV_DIR" ] && existing+=("$RUNTIME_VENV_DIR")
+
+  if [ "${#existing[@]}" -eq 0 ]; then
+    echo "No mlx venvs found."
+    return 0
+  fi
+
+  if [ "$yes" -ne 1 ]; then
+    echo "Delete the following venvs?"
+    printf '  %s\n' "${existing[@]}"
+    if ! confirm "Proceed?"; then
+      echo "Aborted."
+      return 0
+    fi
+  fi
+
+  rm -rf "${existing[@]}"
+  echo "Deleted:"
+  printf '  %s\n' "${existing[@]}"
 }
 
 cmd_get() {
@@ -177,7 +157,7 @@ cmd_get() {
   fi
   ensure_venv
   echo "Downloading $model..."
-  run_in_venv "$(hf_download_exe)" download "$model"
+  run_in_venv "$VENV_DIR" "$(hf_download_exe)" download "$model"
 }
 
 list_model_names() {
@@ -211,7 +191,20 @@ cmd_chat() {
     echo "Model '$model' is not installed. Run '$SCRIPT_NAME get $model' first." >&2
     exit 1
   fi
-  run_in_venv mlx_lm.chat --model "$model"
+
+  local snap
+  snap="$(model_snapshot_dir "$model")" || true
+  if [ -n "$snap" ] && pack_requires_runtime "$snap"; then
+    echo "This pack declares a custom runtime loader; using the separate runtime venv..."
+    ensure_runtime_venv
+    if [ -f "$snap/runtime/requirements.txt" ]; then
+      run_in_venv "$RUNTIME_VENV_DIR" pip install -r "$snap/runtime/requirements.txt"
+    fi
+    run_in_venv "$RUNTIME_VENV_DIR" python3 "$SCRIPT_DIR/mlx_manager/pack_chat.py" "$snap"
+    return
+  fi
+
+  run_in_venv "$VENV_DIR" mlx_lm.chat --model "$model"
 }
 
 cmd_serve() {
@@ -226,7 +219,7 @@ cmd_serve() {
     echo "Model '$model' is not installed. Run '$SCRIPT_NAME get $model' first." >&2
     exit 1
   fi
-  run_in_venv mlx_lm.server --model "$model" --port "$port"
+  run_in_venv "$VENV_DIR" mlx_lm.server --model "$model" --port "$port"
 }
 
 cmd_delete() {

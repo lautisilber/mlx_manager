@@ -2,7 +2,7 @@
 
 A bash script tool that allows the user to manage local AI models from the terminal, wrapping Apple's mlx-lm. It lets the user manage the local models with a few commands
 
-- ```mlx create-venv``` Creates the python venv used to run mlx-lm
+- ```mlx create-venv``` Creates the python venv used to run mlx-lm (optional — created automatically on first use if you skip this)
 - ```mlx delete-venv``` Deletes the python venv used to run mlx-lm
 - ```mlx get <huggingface name>``` Lets the user get the desired model from huggingface
 - ```mlx list``` Lists all installed models
@@ -22,7 +22,7 @@ Copies `mlx` to `~/.local/bin`, and the `mlx_manager/` support folder (containin
 
 There are two venvs, and you only ever directly manage one of them:
 
-- **`~/.mlx-manager/venv`** — the normal venv, used for everything by default (`mlx get`, `mlx chat`, `mlx serve` on any regular model). `mlx create-venv` always creates this one (via `python3 -m venv`, so it still picks up whatever Python `pyenv` or similar has active on your `PATH`) and installs `mlx-lm` into it. This is the venv that must exist before you can use the tool at all.
+- **`~/.mlx-manager/venv`** — the normal venv, used for everything by default (`mlx get`, `mlx chat`, `mlx serve` on any regular model). You don't need to create this yourself: it's created lazily the first time any command needs it (via `python3 -m venv`, so it still picks up whatever Python `pyenv` or similar has active on your `PATH`), installing `mlx-lm` into it, then reused for every normal model after that. `mlx create-venv` still exists if you'd rather provision it explicitly ahead of time (e.g. to control which Python it's built from); it's a no-op if the venv already exists.
 - **`~/.mlx-manager/venv-runtime`** — a second venv, only for models whose pack declares `requires_runtime` in `config.json` (packs that ship their own loader because their architecture or quantization scheme isn't supported by stock mlx-lm — see below). You never create this yourself: `mlx chat`/`mlx serve` detect such a pack automatically and create this venv the first time one is needed, installing that pack's `runtime/requirements.txt` into it. Keeping it separate means a pack's pinned dependency versions (which can differ a lot from what `mlx-lm` normally uses) never affect the normal venv.
 
 `mlx delete-venv` removes both venvs if present, in one confirmation — you don't need to track them separately when cleaning up.

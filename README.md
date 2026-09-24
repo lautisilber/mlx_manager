@@ -7,7 +7,7 @@ A bash script tool that allows the user to manage local AI models from the termi
 - ```mlx get <huggingface name>``` Lets the user get the desired model from huggingface
 - ```mlx list``` Lists all installed models
 - ```mlx chat <huggingface name>``` Lets the user chat in the window with the desired model. If the model isn't installed, it lets the user know how to do so with ```mlx get```
-- ```mlx serve <huggingface name> <port>``` Lets the user serve the desired model in the specified port
+- ```mlx serve <huggingface name> [--port <port>] [--host <host>]``` Lets the user serve the desired model (defaults: port 8080, host 127.0.0.1)
 - ```mlx delete <huggingface name>``` Lets the user delete an installed model
 
 ## Setup
@@ -23,11 +23,15 @@ Copies `mlx` to `~/.local/bin`, and the `mlx_manager/` support folder (containin
 There are two venvs, and you only ever directly manage one of them:
 
 - **`~/.mlx-manager/venv`** — the normal venv, used for everything by default (`mlx get`, `mlx chat`, `mlx serve` on any regular model). `mlx create-venv` always creates this one (via `python3 -m venv`, so it still picks up whatever Python `pyenv` or similar has active on your `PATH`) and installs `mlx-lm` into it. This is the venv that must exist before you can use the tool at all.
-- **`~/.mlx-manager/venv-runtime`** — a second venv, only for models whose pack declares `requires_runtime` in `config.json` (packs that ship their own loader because their architecture or quantization scheme isn't supported by stock mlx-lm — see below). You never create this yourself: `mlx chat` detects such a pack automatically and creates this venv the first time one is needed, installing that pack's `runtime/requirements.txt` into it. Keeping it separate means a pack's pinned dependency versions (which can differ a lot from what `mlx-lm` normally uses) never affect the normal venv.
+- **`~/.mlx-manager/venv-runtime`** — a second venv, only for models whose pack declares `requires_runtime` in `config.json` (packs that ship their own loader because their architecture or quantization scheme isn't supported by stock mlx-lm — see below). You never create this yourself: `mlx chat`/`mlx serve` detect such a pack automatically and create this venv the first time one is needed, installing that pack's `runtime/requirements.txt` into it. Keeping it separate means a pack's pinned dependency versions (which can differ a lot from what `mlx-lm` normally uses) never affect the normal venv.
 
 `mlx delete-venv` removes both venvs if present, in one confirmation — you don't need to track them separately when cleaning up.
 
-Some HuggingFace packs (e.g. novel quantization schemes) ship their own loader in a `runtime/` folder instead of relying on mlx-lm's architecture registry. When `mlx chat` detects one (via the `venv-runtime` venv above), it chats via `mlx_manager/pack_chat.py`'s REPL instead of `mlx_lm.chat`. `mlx serve` does not yet support these packs.
+### Custom-runtime packs
+
+Some HuggingFace packs (e.g. novel quantization schemes) ship their own loader in a `runtime/` folder instead of relying on mlx-lm's architecture registry. When `mlx chat`/`mlx serve` detect one (via the `venv-runtime` venv above), they use `mlx_manager/pack_chat.py` (a REPL, in place of `mlx_lm.chat`) or `mlx_manager/pack_serve.py` (a minimal OpenAI-compatible `/v1/chat/completions` + `/v1/models` server, in place of `mlx_lm.server`) instead. Both share their model-loading/generation logic via `mlx_manager/pack_common.py`.
+
+`pack_serve.py` does not support streaming responses (`stream: true` in a request is accepted but ignored — you always get a single JSON response back once generation finishes). This is intentional for now: it's simpler and works fine with clients that don't require streaming (e.g. VS Code's chat, when the model's `streaming` setting is set to `false`), but clients that require a real SSE stream (e.g. some terminal coding agents) may not work correctly against it yet.
 
 ### Tab completion (optional)
 

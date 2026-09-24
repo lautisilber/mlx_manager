@@ -26,7 +26,7 @@ Commands:
   get <huggingface-name>         Download a model from huggingface
   list                           List all installed models
   chat <huggingface-name>        Chat with an installed model
-  serve <huggingface-name> [port]  Serve a model (default port 8080)
+  serve <huggingface-name> [--port <port>] [--host <host>]  Serve a model (defaults: port 8080, host 127.0.0.1)
   delete <huggingface-name> [-y] Delete an installed model
   completion                     Print shell completion code (see below)
 
@@ -97,6 +97,23 @@ import json, sys
 with open(sys.argv[1]) as f:
     sys.exit(0 if json.load(f).get('requires_runtime') else 1)
 " "$1/config.json"
+}
+
+# if $1 is a custom-runtime pack, ensures the runtime venv + its pinned deps
+# are ready and prints the snapshot dir (for the caller to route to
+# pack_chat.py/pack_serve.py instead of mlx_lm); returns 1 otherwise.
+# pip/venv-creation output is redirected to stderr so it doesn't end up in
+# the captured snapshot-dir value.
+prepare_runtime_pack() {
+  local snap
+  snap="$(model_snapshot_dir "$1")" || return 1
+  pack_requires_runtime "$snap" || return 1
+  echo "This pack declares a custom runtime loader; using the separate runtime venv..." >&2
+  ensure_runtime_venv 1>&2
+  if [ -f "$snap/runtime/requirements.txt" ]; then
+    run_in_venv "$RUNTIME_VENV_DIR" pip install -r "$snap/runtime/requirements.txt" 1>&2
+  fi
+  echo "$snap"
 }
 
 hf_download_exe() {
@@ -186,40 +203,48 @@ cmd_chat() {
     echo "Usage: $SCRIPT_NAME chat <huggingface-name>" >&2
     exit 1
   fi
-  ensure_venv
   if ! model_installed "$model"; then
     echo "Model '$model' is not installed. Run '$SCRIPT_NAME get $model' first." >&2
     exit 1
   fi
 
   local snap
-  snap="$(model_snapshot_dir "$model")" || true
-  if [ -n "$snap" ] && pack_requires_runtime "$snap"; then
-    echo "This pack declares a custom runtime loader; using the separate runtime venv..."
-    ensure_runtime_venv
-    if [ -f "$snap/runtime/requirements.txt" ]; then
-      run_in_venv "$RUNTIME_VENV_DIR" pip install -r "$snap/runtime/requirements.txt"
-    fi
+  if snap="$(prepare_runtime_pack "$model")"; then
     run_in_venv "$RUNTIME_VENV_DIR" python3 "$SCRIPT_DIR/mlx_manager/pack_chat.py" "$snap"
     return
   fi
 
+  ensure_venv
   run_in_venv "$VENV_DIR" mlx_lm.chat --model "$model"
 }
 
 cmd_serve() {
-  local model="${1:-}"
-  local port="${2:-8080}"
+  local model="" port="8080" host="127.0.0.1"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --port) port="$2"; shift 2 ;;
+      --host) host="$2"; shift 2 ;;
+      *) model="$1"; shift ;;
+    esac
+  done
   if [ -z "$model" ]; then
-    echo "Usage: $SCRIPT_NAME serve <huggingface-name> [port]" >&2
+    echo "Usage: $SCRIPT_NAME serve <huggingface-name> [--port <port>] [--host <host>]" >&2
     exit 1
   fi
-  ensure_venv
   if ! model_installed "$model"; then
     echo "Model '$model' is not installed. Run '$SCRIPT_NAME get $model' first." >&2
     exit 1
   fi
-  run_in_venv "$VENV_DIR" mlx_lm.server --model "$model" --port "$port"
+
+  local snap
+  if snap="$(prepare_runtime_pack "$model")"; then
+    echo "Serving $model on $host:$port (no streaming support yet)..."
+    run_in_venv "$RUNTIME_VENV_DIR" python3 "$SCRIPT_DIR/mlx_manager/pack_serve.py" "$snap" "$port" "$model" "$host"
+    return
+  fi
+
+  ensure_venv
+  run_in_venv "$VENV_DIR" mlx_lm.server --model "$model" --port "$port" --host "$host"
 }
 
 cmd_delete() {

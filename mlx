@@ -238,7 +238,7 @@ cmd_serve() {
 
   local snap
   if snap="$(prepare_runtime_pack "$model")"; then
-    echo "Serving $model on $host:$port (no streaming support yet)..."
+    echo "Serving $model on $host:$port..."
     run_in_venv "$RUNTIME_VENV_DIR" python3 "$SCRIPT_DIR/mlx_manager/pack_serve.py" "$snap" "$port" "$model" "$host"
     return
   fi

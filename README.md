@@ -31,7 +31,7 @@ There are two venvs, and you only ever directly manage one of them:
 
 Some HuggingFace packs (e.g. novel quantization schemes) ship their own loader in a `runtime/` folder instead of relying on mlx-lm's architecture registry. When `mlx chat`/`mlx serve` detect one (via the `venv-runtime` venv above), they use `mlx_manager/pack_chat.py` (a REPL, in place of `mlx_lm.chat`) or `mlx_manager/pack_serve.py` (a minimal OpenAI-compatible `/v1/chat/completions` + `/v1/models` server, in place of `mlx_lm.server`) instead. Both share their model-loading/generation logic via `mlx_manager/pack_common.py`.
 
-`pack_serve.py` does not support streaming responses (`stream: true` in a request is accepted but ignored — you always get a single JSON response back once generation finishes). This is intentional for now: it's simpler and works fine with clients that don't require streaming (e.g. VS Code's chat, when the model's `streaming` setting is set to `false`), but clients that require a real SSE stream (e.g. some terminal coding agents) may not work correctly against it yet.
+`pack_serve.py` supports both a single-JSON-body response and, when the client sets `"stream": true`, a real Server-Sent-Events stream of `chat.completion.chunk` objects (HTTP/1.1 chunked transfer encoding), so it should work with clients that require streaming as well as ones that don't.
 
 ### Tab completion (optional)
 

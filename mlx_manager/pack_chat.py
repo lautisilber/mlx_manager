@@ -34,7 +34,7 @@ def main():
             print(COMMAND_HELP)
             continue
         messages.append({"role": "user", "content": query})
-        text, _ = generate(messages, on_token=lambda t: print(t, end="", flush=True))
+        text, _, _ = generate(messages, on_token=lambda t: print(t, end="", flush=True))
         print()
         messages.append({"role": "assistant", "content": text})
 

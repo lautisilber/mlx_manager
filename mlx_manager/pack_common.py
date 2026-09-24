@@ -88,6 +88,7 @@ def make_text_generator(pack, max_tokens=MAX_TOKENS):
         x = mx.array([tokenizer.encode(render(pack, messages), add_special_tokens=False).ids])
         cache = model.make_cache()
         generated = []
+        finish_reason = "length"
         for _ in range(max_tokens):
             logits = model.lm_head(model.model(x, cache=cache)[:, -1:, :])[:, -1, :]
             for processor in processors:
@@ -96,11 +97,12 @@ def make_text_generator(pack, max_tokens=MAX_TOKENS):
             mx.eval(x)
             token = int(x.item())
             if token in stop:
+                finish_reason = "stop"
                 break
             generated.append(token)
             if on_token:
                 on_token(tokenizer.decode([token]))
-        return tokenizer.decode(generated), len(generated)
+        return tokenizer.decode(generated), len(generated), finish_reason
 
     return generate
 
@@ -108,24 +110,33 @@ def make_text_generator(pack, max_tokens=MAX_TOKENS):
 def make_vlm_text_generator(pack, max_tokens=MAX_TOKENS):
     """Text-only generation through mlx-vlm, for packs whose weights need that loader."""
     sys.path.insert(0, str(pack / "runtime"))
-    from mlx_vlm import generate as vlm_generate
+    from mlx_vlm import stream_generate
     from vision_artifact import load_vl_model
 
     model, processor, _ = load_vl_model(pack)
     settings = sampler_settings(pack)
 
     def generate(messages, on_token=None):
-        result = vlm_generate(model, processor, render(pack, messages), max_tokens=max_tokens, **settings)
-        text = result if isinstance(result, str) else result.text
-        if on_token:
-            on_token(text)
-        return text, len(text.split())
+        chunks = []
+        completion_tokens = 0
+        finish_reason = "length"
+        for result in stream_generate(
+            model, processor, render(pack, messages), max_tokens=max_tokens, **settings
+        ):
+            if result.text:
+                chunks.append(result.text)
+                if on_token:
+                    on_token(result.text)
+            completion_tokens = result.generation_tokens
+            if result.finish_reason:
+                finish_reason = result.finish_reason
+        return "".join(chunks), completion_tokens, finish_reason
 
     return generate
 
 
 def make_generator(pack, max_tokens=MAX_TOKENS):
-    """Returns generate(messages, on_token=None) -> (text, completion_token_count),
+    """Returns generate(messages, on_token=None) -> (text, completion_token_count, finish_reason),
     using whichever loader this pack's weights actually need."""
     factory = make_vlm_text_generator if pack_needs_vlm_loader(pack) else make_text_generator
     return factory(pack, max_tokens)

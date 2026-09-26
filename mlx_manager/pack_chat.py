@@ -8,7 +8,7 @@ mlx_lm.chat's REPL for such packs.
 import sys
 from pathlib import Path
 
-from pack_common import make_generator
+from pack_common import make_generator, render
 
 PACK = Path(sys.argv[1]).resolve()
 
@@ -34,7 +34,7 @@ def main():
             print(COMMAND_HELP)
             continue
         messages.append({"role": "user", "content": query})
-        text, _, _ = generate(messages, on_token=lambda t: print(t, end="", flush=True))
+        text, _, _ = generate(render(PACK, messages), on_token=lambda t: print(t, end="", flush=True))
         print()
         messages.append({"role": "assistant", "content": text})
 

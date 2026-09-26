@@ -29,9 +29,9 @@ There are two venvs, and you only ever directly manage one of them:
 
 ### Custom-runtime packs
 
-Some HuggingFace packs (e.g. novel quantization schemes) ship their own loader in a `runtime/` folder instead of relying on mlx-lm's architecture registry. When `mlx chat`/`mlx serve` detect one (via the `venv-runtime` venv above), they use `mlx_manager/pack_chat.py` (a REPL, in place of `mlx_lm.chat`) or `mlx_manager/pack_serve.py` (a minimal OpenAI-compatible `/v1/chat/completions` + `/v1/models` server, in place of `mlx_lm.server`) instead. Both share their model-loading/generation logic via `mlx_manager/pack_common.py`.
+Some HuggingFace packs (e.g. novel quantization schemes) ship their own loader in a `runtime/` folder instead of relying on mlx-lm's architecture registry. When `mlx chat`/`mlx serve` detect one (via the `venv-runtime` venv above), they use `mlx_manager/pack_chat.py` (a REPL, in place of `mlx_lm.chat`) or `mlx_manager/pack_serve.py` (a minimal OpenAI-compatible server, in place of `mlx_lm.server`) instead. Both share their model-loading/generation logic via `mlx_manager/pack_common.py`.
 
-`pack_serve.py` supports both a single-JSON-body response and, when the client sets `"stream": true`, a real Server-Sent-Events stream of `chat.completion.chunk` objects (HTTP/1.1 chunked transfer encoding), so it should work with clients that require streaming as well as ones that don't.
+`pack_serve.py` implements `/v1/models`, `/v1/chat/completions` (message-based chat), and `/v1/completions` (legacy raw-prompt completion — no chat template applied, useful for editor inline-completion features like Zed's). Both completion endpoints support a single-JSON-body response and, when the client sets `"stream": true`, a real Server-Sent-Events stream (HTTP/1.1 chunked transfer encoding), so they should work with clients that require streaming as well as ones that don't. Both also honor per-request sampling overrides in the request body (`max_tokens`, `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`) — anything not sent falls back to the pack's own `generation_config.json` defaults. `stop` (custom stop strings) is not implemented; only the model's own EOS tokens end generation.
 
 ### Tab completion (optional)
 

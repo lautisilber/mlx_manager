@@ -75,17 +75,30 @@ def make_text_generator(pack, max_tokens=MAX_TOKENS):
         for i in (tokenizer.token_to_id("<|im_end|>"), tokenizer.token_to_id("<|endoftext|>"))
         if i is not None
     }
-    settings = sampler_settings(pack)
-    sample = make_sampler(
-        temp=settings["temperature"],
-        top_p=settings["top_p"],
-        top_k=settings["top_k"],
-        min_p=settings.get("min_p", 0.0),
-    )
+    defaults = sampler_settings(pack)
 
-    def generate(messages, on_token=None):
-        processors = make_logits_processors(repetition_penalty=settings.get("repetition_penalty"))
-        x = mx.array([tokenizer.encode(render(pack, messages), add_special_tokens=False).ids])
+    def generate(
+        prompt_text,
+        on_token=None,
+        max_tokens=max_tokens,
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        min_p=None,
+        repetition_penalty=None,
+    ):
+        sample = make_sampler(
+            temp=temperature if temperature is not None else defaults["temperature"],
+            top_p=top_p if top_p is not None else defaults["top_p"],
+            top_k=top_k if top_k is not None else defaults["top_k"],
+            min_p=min_p if min_p is not None else defaults.get("min_p", 0.0),
+        )
+        processors = make_logits_processors(
+            repetition_penalty=(
+                repetition_penalty if repetition_penalty is not None else defaults.get("repetition_penalty")
+            )
+        )
+        x = mx.array([tokenizer.encode(prompt_text, add_special_tokens=False).ids])
         cache = model.make_cache()
         generated = []
         finish_reason = "length"
@@ -114,14 +127,33 @@ def make_vlm_text_generator(pack, max_tokens=MAX_TOKENS):
     from vision_artifact import load_vl_model
 
     model, processor, _ = load_vl_model(pack)
-    settings = sampler_settings(pack)
+    defaults = sampler_settings(pack)
 
-    def generate(messages, on_token=None):
+    def generate(
+        prompt_text,
+        on_token=None,
+        max_tokens=max_tokens,
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        min_p=None,
+        repetition_penalty=None,
+    ):
+        settings = dict(defaults)
+        overrides = {
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "min_p": min_p,
+            "repetition_penalty": repetition_penalty,
+        }
+        settings.update({k: v for k, v in overrides.items() if v is not None})
+
         chunks = []
         completion_tokens = 0
         finish_reason = "length"
         for result in stream_generate(
-            model, processor, render(pack, messages), max_tokens=max_tokens, **settings
+            model, processor, prompt_text, max_tokens=max_tokens, **settings
         ):
             if result.text:
                 chunks.append(result.text)
@@ -136,7 +168,11 @@ def make_vlm_text_generator(pack, max_tokens=MAX_TOKENS):
 
 
 def make_generator(pack, max_tokens=MAX_TOKENS):
-    """Returns generate(messages, on_token=None) -> (text, completion_token_count, finish_reason),
-    using whichever loader this pack's weights actually need."""
+    """Returns generate(prompt_text, on_token=None, max_tokens=None, temperature=None,
+    top_p=None, top_k=None, min_p=None, repetition_penalty=None)
+    -> (text, completion_token_count, finish_reason), using whichever loader this pack's
+    weights actually need. prompt_text is fed to the tokenizer as-is; callers that have a
+    chat message list should render() it first. Any sampling kwarg left as None falls back
+    to the pack's own generation_config.json default."""
     factory = make_vlm_text_generator if pack_needs_vlm_loader(pack) else make_text_generator
     return factory(pack, max_tokens)

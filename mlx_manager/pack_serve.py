@@ -9,10 +9,12 @@ JSON-body response and, when the client sets "stream": true, a Server-Sent-
 Events stream of chunk objects (HTTP/1.1 chunked transfer encoding, since
 the response length isn't known upfront). Both also accept per-request
 sampling overrides (max_tokens, temperature, top_p, top_k, min_p,
-repetition_penalty); anything not given falls back to the pack's own
-generation_config.json defaults. Requests are handled one at a time (plain
-HTTPServer, not threaded) since the underlying model isn't safe to call
-concurrently.
+repetition_penalty, stop); anything not given falls back to the pack's own
+generation_config.json defaults. stop (a string or list of strings) ends
+generation as soon as any of them appears in the output, excluding the
+match itself from the returned/streamed text. Requests are handled one at
+a time (plain HTTPServer, not threaded) since the underlying model isn't
+safe to call concurrently.
 """
 
 import json
@@ -29,13 +31,16 @@ PORT = int(sys.argv[2])
 MODEL_NAME = sys.argv[3]
 HOST = sys.argv[4]
 
-OVERRIDE_KEYS = ("max_tokens", "temperature", "top_p", "top_k", "min_p", "repetition_penalty")
+OVERRIDE_KEYS = ("max_tokens", "temperature", "top_p", "top_k", "min_p", "repetition_penalty", "stop")
 
 
 def _overrides(body):
     """Per-request sampling overrides recognized from the request body; anything not
     present (or explicitly null) falls back to the pack's own generation_config.json."""
-    return {k: body[k] for k in OVERRIDE_KEYS if body.get(k) is not None}
+    overrides = {k: body[k] for k in OVERRIDE_KEYS if body.get(k) is not None}
+    if isinstance(overrides.get("stop"), str):
+        overrides["stop"] = [overrides["stop"]]
+    return overrides
 
 
 def _chat_completion(text, completion_tokens, finish_reason):

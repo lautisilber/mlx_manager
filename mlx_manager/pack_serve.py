@@ -152,12 +152,18 @@ def build_handler(generate):
                 self._send_json(404, {"error": {"message": "not found"}})
 
         def do_POST(self):
-            if self.path in ("/v1/chat/completions", "/chat/completions"):
-                self._handle_chat_completions()
-            elif self.path in ("/v1/completions", "/completions"):
-                self._handle_completions()
-            else:
-                self._send_json(404, {"error": {"message": "not found"}})
+            try:
+                if self.path in ("/v1/chat/completions", "/chat/completions"):
+                    self._handle_chat_completions()
+                elif self.path in ("/v1/completions", "/completions"):
+                    self._handle_completions()
+                else:
+                    self._send_json(404, {"error": {"message": "not found"}})
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                # normal when a client cancels an in-flight request (e.g. an editor
+                # discarding a stale autocomplete suggestion mid-stream); generation
+                # already stopped at this point since the failed write raised here
+                print("[INFO] Client disconnected before the response finished.")
 
         def _handle_chat_completions(self):
             body, err = self._read_json_body()
